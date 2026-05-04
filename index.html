@@ -36,6 +36,24 @@
 
         let firedOnce = false;
 
+        function armReturnWatcher() {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            const closeNow = () => {
+                window.removeEventListener('focus', onReturn);
+                document.removeEventListener('visibilitychange', onVisible);
+                window.removeEventListener('pageshow', onReturn);
+                try { tg.close(); } catch (e) {}
+            };
+            const onReturn = () => closeNo
+            const onVisible = () => {
+                if (document.visibilitySta
+            };
+            window.addEventListener('focus
+            document.addEventListener('visibilitychange', onVisible);
+            window.addEventListener('pages
+            setTimeout(closeNow, 60000);
+        }
+
         function fire() {
             const tg = window.Telegram && window.Telegram.WebApp;
             if (!tg) {
@@ -44,34 +62,35 @@
             }
             const p = getParams();
             if (!p.img) {
-                msg.textContent = 'Нет картинки';
+                msg.textContent = 'Нет кар
                 return;
             }
             try {
-                tg.shareToStory(p.img, buildOpts(p));
+                tg.shareToStory(p.img, bui
                 firedOnce = true;
-                msg.textContent = 'Готово';
+                msg.textContent = 'Готово'
+                setTimeout(armReturnWatcher, 1500);
             } catch (e) {
                 msg.textContent = 'Не удалось: ' + e.message;
-                btn.style.display = 'inline-block';
+                btn.style.display = 'inlin
             }
         }
 
-        btn.addEventListener('click', fire);
+        btn.addEventListener('click', fire
 
         function init() {
             const tg = window.Telegram && window.Telegram.WebApp;
             if (!tg) {
                 msg.textContent = 'Открой эту страницу из Telegram';
-                btn.style.display = 'none';
+                btn.style.display = 'none'
                 return;
             }
             try { tg.ready(); } catch (e) {}
-            try { tg.expand(); } catch (e) {}
+            try { tg.expand(); } catch (e)
 
             setTimeout(() => {
                 if (!firedOnce) {
-                    btn.style.display = 'inline-block';
+                    btn.style.display = 'i
                     msg.textContent = 'Нажми, чтобы открыть редактор';
                 }
             }, 1000);
@@ -79,11 +98,11 @@
             setTimeout(fire, 400);
         }
 
-        if (document.readyState === 'complete') {
+        if (document.readyState === 'compl
             init();
         } else {
             window.addEventListener('load', init);
         }
     </script>
 </body>
-</html>
+</html>    
