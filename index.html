@@ -41,13 +41,10 @@
             if (text) opts.text = text;
             if (linkUrl) opts.widget_link = { url: linkUrl, name: linkName };
 
-            let firedOnce = false;
-
             const fire = () => {
                 try {
                     tg.shareToStory(img, opts);
-                    firedOnce = true;
-                    msg.textContent = 'Редактор сторис открывается…';
+                    setTimeout(() => { try { tg.close(); } catch (e) {} }, 200);
                 } catch (e) {
                     msg.textContent = 'Не удалось открыть: ' + e.message;
                     btn.style.display = 'inline-block';
@@ -55,13 +52,6 @@
             };
 
             btn.addEventListener('click', fire);
-
-            document.addEventListener('visibilitychange', () => {
-                if (firedOnce && document.visibilityState === 'visible') {
-                    try { tg.close(); } catch (e) {}
-                }
-            });
-
             setTimeout(fire, 350);
         })();
     </script>
