@@ -6,20 +6,25 @@
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         body { background: #1a1a1a; color: #fff; font-family: -apple-system, sans-serif;
-               display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+               display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; flex-direction: column; }
         .msg { text-align: center; opacity: 0.7; }
     </style>
 </head>
 <body>
     <div class="msg">Открываю редактор сторис…</div>
+    <button id="share" style="display:none; margin-top:24px; padding:14px 28px; border:0; border-radius:14px; background:#fff; color:#000; font-size:16px; font-weight:600;">Открыть редактор</button>
     <script>
         (function () {
             const tg = window.Telegram && window.Telegram.WebApp;
+            const msg = document.querySelector('.msg');
+            const btn = document.getElementById('share');
+
             if (!tg) {
-                document.querySelector('.msg').textContent = 'Открой эту страницу из Telegram';
+                msg.textContent = 'Открой эту страницу из Telegram';
                 return;
             }
             tg.ready();
+            tg.expand();
 
             const params = new URLSearchParams(window.location.search);
             const img = params.get('img');
@@ -28,7 +33,7 @@
             const linkName = params.get('linkName') || 'Открыть бота';
 
             if (!img) {
-                document.querySelector('.msg').textContent = 'Нет картинки';
+                msg.textContent = 'Нет картинки';
                 return;
             }
 
@@ -36,13 +41,21 @@
             if (text) opts.text = text;
             if (linkUrl) opts.widget_link = { url: linkUrl, name: linkName };
 
-            try {
-                tg.shareToStory(img, opts);
-            } catch (e) {
-                document.querySelector('.msg').textContent = 'Не удалось открыть редактор: ' + e.message;
-                return;
-            }
-            setTimeout(() => { try { tg.close(); } catch (e) {} }, 600);
+            const fire = () => {
+                try {
+                    tg.shareToStory(img, opts);
+                    msg.textContent = 'Редактор сторис открывается…';
+                } catch (e) {
+                    msg.textContent = 'Не удалось открыть: ' + e.message;
+                    btn.style.display = 'inline-block';
+                }
+            };
+
+            btn.addEventListener('click', fire);
+            setTimeout(() => {
+                fire();
+                setTimeout(() => { btn.style.display = 'inline-block'; msg.textContent = 'Если редактор не открылся — нажми кнопку'; }, 1500);
+            }, 350);
         })();
     </script>
 </body>
