@@ -1,77 +1,12 @@
-
-            setTimeout(() => {
-                if (!firedOnce) {
-                    btn.style.display = 'inline-block';
-                    msg.textContent = 'Нажми, чтобы открыть редактор';
-                }
-            }, 1000);
-
-            setTimeout(fire, 400);
-        }
-
-        if (document.readyState === 'complete') {
-            init();
-        } else {
-            window.addEventListener('load', init);
-        }
-    </script>
-</body>
-</html>
-
-После обновления — потести: нажми «В сторис» → редактор открывается → нажми «Сбросить» → мини-апп должен закрыться сам.
-
-✻ Cooked for 2m 13s
-
-❯ Ну ты сломал, щас вообще не открывается меню сториса
-
-  Ran 1 shell command
-
-⏺ Web Search("Telegram WebApp shareToStory event callback success close mini app")
-Did 1 search in 6s
-
-Откачу к простому варианту — без сложного отслеживания возврата. Просто после shareToStory через 5 секунд закрываем мини-апп. Это гарантированно даст редактору открыться:
-
-⏺ Update(share_page/index.html)
-Added 1 line, removed 21 lines
-
-        let firedOnce = false;
-
-        function armReturnWatcher() {
-            const tg = window.Telegram && window.Telegram.WebApp;
-            const closeNow = () => {
-                window.removeEventListener('focus', onReturn);
-                document.removeEventListener('visibilitychange', onVisible);
-                window.removeEventListener('pageshow', onReturn);
-                try { tg.close(); } catch (e) {}
-            };
-            const onReturn = () => closeNow();
-            const onVisible = () => {
-                if (document.visibilityState === 'visible') closeNow();
-            };
-            window.addEventListener('focus', onReturn);
-            document.addEventListener('visibilitychange', onVisible);
-            window.addEventListener('pageshow', onReturn);
-            // Safety: автозакрытие через 60 сек
-            setTimeout(closeNow, 60000);
-        }
-
-        function fire() {
-            const tg = window.Telegram && window.Telegram.WebApp;
-            if (!tg) {
-
-                tg.shareToStory(p.img, buildOpts(p));
-                firedOnce = true;
-                msg.textContent = 'Готово';
-                // После того как редактор успел открыться, начать слушать возврат
-                setTimeout(armReturnWatcher, 1500);
-                setTimeout(() => { try { tg.close(); } catch (e) {} }, 5000);
-            } catch (e) {
-                msg.textContent = 'Не удалось: ' + e.message;
-                btn.style.display = 'inline-block';
-
-
-
-
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Поделиться в сторис</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { background: #1a1a1a; color: #fff; font-family: -apple-system, sans-serif;
+               display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
         .msg { text-align: center; opacity: 0.7; }
     </style>
 </head>
@@ -135,6 +70,7 @@ Added 1 line, removed 21 lines
             try { tg.ready(); } catch (e) {}
             try { tg.expand(); } catch (e) {}
 
+            // Кнопка-страховка показывается через 1с если автомат не сработал
             setTimeout(() => {
                 if (!firedOnce) {
                     btn.style.display = 'inline-block';
@@ -142,6 +78,7 @@ Added 1 line, removed 21 lines
                 }
             }, 1000);
 
+            // Автоматический вызов через короткий таймаут
             setTimeout(fire, 400);
         }
 
@@ -153,5 +90,3 @@ Added 1 line, removed 21 lines
     </script>
 </body>
 </html>
-      <meta charset="UTF-8">
-      <title>Поделиться в
