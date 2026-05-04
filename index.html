@@ -14,46 +14,76 @@
     <div class="msg">Открываю редактор сторис…</div>
     <button id="share" style="display:none; margin-top:24px; padding:14px 28px; border:0; border-radius:14px; background:#fff; color:#000; font-size:16px; font-weight:600;">Открыть редактор</button>
     <script>
-        (function () {
-            const tg = window.Telegram && window.Telegram.WebApp;
-            const msg = document.querySelector('.msg');
-            const btn = document.getElementById('share');
+        const msg = document.querySelector('.msg');
+        const btn = document.getElementById('share');
 
+        function getParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                img: params.get('img'),
+                text: params.get('text') || '',
+                linkUrl: params.get('link') || '',
+                linkName: params.get('linkName') || 'Открыть бота',
+            };
+        }
+
+        function buildOpts(p) {
+            const opts = {};
+            if (p.text) opts.text = p.text;
+            if (p.linkUrl) opts.widget_link = { url: p.linkUrl, name: p.linkName };
+            return opts;
+        }
+
+        let firedOnce = false;
+
+        function fire() {
+            const tg = window.Telegram && window.Telegram.WebApp;
             if (!tg) {
-                msg.textContent = 'Открой эту страницу из Telegram';
+                msg.textContent = 'Telegram WebApp не доступен';
                 return;
             }
-            tg.ready();
-            tg.expand();
-
-            const params = new URLSearchParams(window.location.search);
-            const img = params.get('img');
-            const text = params.get('text') || '';
-            const linkUrl = params.get('link') || '';
-            const linkName = params.get('linkName') || 'Открыть бота';
-
-            if (!img) {
+            const p = getParams();
+            if (!p.img) {
                 msg.textContent = 'Нет картинки';
                 return;
             }
+            try {
+                tg.shareToStory(p.img, buildOpts(p));
+                firedOnce = true;
+                msg.textContent = 'Готово';
+            } catch (e) {
+                msg.textContent = 'Не удалось: ' + e.message;
+                btn.style.display = 'inline-block';
+            }
+        }
 
-            const opts = {};
-            if (text) opts.text = text;
-            if (linkUrl) opts.widget_link = { url: linkUrl, name: linkName };
+        btn.addEventListener('click', fire);
 
-            const fire = () => {
-                try {
-                    tg.shareToStory(img, opts);
-                    setTimeout(() => { try { tg.close(); } catch (e) {} }, 200);
-                } catch (e) {
-                    msg.textContent = 'Не удалось открыть: ' + e.message;
+        function init() {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            if (!tg) {
+                msg.textContent = 'Открой эту страницу из Telegram';
+                btn.style.display = 'none';
+                return;
+            }
+            try { tg.ready(); } catch (e) {}
+            try { tg.expand(); } catch (e) {}
+
+            setTimeout(() => {
+                if (!firedOnce) {
                     btn.style.display = 'inline-block';
+                    msg.textContent = 'Нажми, чтобы открыть редактор';
                 }
-            };
+            }, 1000);
 
-            btn.addEventListener('click', fire);
-            setTimeout(fire, 350);
-        })();
+            setTimeout(fire, 400);
+        }
+
+        if (document.readyState === 'complete') {
+            init();
+        } else {
+            window.addEventListener('load', init);
+        }
     </script>
 </body>
 </html>
