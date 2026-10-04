@@ -1,6 +1,18 @@
 # Поднять всё на фейковом маркете:   docker compose --profile fake up -d
 # Настоящий Telegram:                docker compose run --rm login   (один раз, спросит номер и код)
 #                                    docker compose --profile telegram up -d
+#
+# Соседство с другими проектами на сервере:
+#   * своё имя проекта (gmw): свои контейнеры, сеть и тома, чужие не трогаем;
+#   * Postgres и Redis наружу не открыты вообще;
+#   * API слушает только 127.0.0.1:${GMW_HOST_PORT:-8040}, снаружи его не видно, пока сам не пробросишь;
+#   * лимиты памяти и CPU, логи с ротацией, чтобы не съесть диск.
+name: gmw
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
 x-app: &app
   build: .
   env_file:
@@ -11,6 +23,9 @@ x-app: &app
   volumes:
     - ./sessions:/app/sessions
   restart: unless-stopped
+  logging: *logging
+  mem_limit: 256m
+  cpus: 0.5
   depends_on:
     postgres: { condition: service_healthy }
     redis: { condition: service_started }
@@ -22,12 +37,18 @@ services:
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: { test: ["CMD", "pg_isready", "-U", "gmw"], interval: 2s, retries: 30 }
     restart: unless-stopped
+    logging: *logging
+    mem_limit: 512m
+    cpus: 1.0
 
   redis:
     image: redis:7
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
     volumes: [redisdata:/data]
     restart: unless-stopped
+    logging: *logging
+    mem_limit: 256m
+    cpus: 0.5
 
   worker:
     <<: *app
@@ -36,7 +57,7 @@ services:
   api:
     <<: *app
     command: ["api"]
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:${GMW_HOST_PORT:-8040}:8000"]
 
   collector-fake:
     <<: *app

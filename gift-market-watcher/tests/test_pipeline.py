@@ -110,3 +110,12 @@ async def test_end_to_end(env):
         assert gift["events"][0]["slug"] == slug
         assert (await http.get("/gifts/nope-1")).status_code == 404
         assert (await http.get("/events", params={"type": "bogus"})).status_code == 422
+
+    # С токеном: без него — 401, /health открыт.
+    app = create_app(st, live, token="s3cret")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as http:
+        assert (await http.get("/stats")).status_code == 401
+        assert (await http.get("/stats", headers={"Authorization": "Bearer nope"})).status_code == 401
+        assert (await http.get("/stats", headers={"Authorization": "Bearer s3cret"})).status_code == 200
+        assert (await http.get("/floors", params={"token": "s3cret"})).status_code == 200
+        assert (await http.get("/health")).status_code == 200

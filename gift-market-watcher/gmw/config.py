@@ -19,6 +19,7 @@ class Settings:
     full_interval: float
     api_host: str
     api_port: int
+    api_token: str | None
 
 
 def load() -> Settings:
@@ -37,4 +38,5 @@ def load() -> Settings:
         full_interval=float(env("GMW_FULL_INTERVAL", "600")),
         api_host=env("GMW_API_HOST", "0.0.0.0"),
         api_port=int(env("GMW_API_PORT", "8000")),
+        api_token=env("GMW_API_TOKEN") or None,
     )

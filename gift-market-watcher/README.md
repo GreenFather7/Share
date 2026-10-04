@@ -48,6 +48,23 @@ docker compose run --rm login                # один раз: номер, ко
 docker compose --profile telegram up -d
 ```
 
+## Установка на сервер с другими проектами
+
+1. Разведка. Скрипт только смотрит и ничего не меняет:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/GreenFather7/Share/claude/parser-from-chat-k5im4d/gift-market-watcher/deploy/preflight.sh | bash
+   ```
+2. Установка: всё ложится в `/opt/gift-market-watcher`, поднимается Docker-проект `gmw`:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/GreenFather7/Share/claude/parser-from-chat-k5im4d/gift-market-watcher/deploy/install.sh | bash
+   ```
+
+Как проект уживается с соседями: своё имя Docker-проекта, своя сеть и тома. Postgres и Redis наружу не открыты.
+API слушает только `127.0.0.1:8040` и требует токен (`GMW_API_TOKEN` в `.env`).
+У каждого контейнера лимиты памяти и CPU (всего около 1.3 ГБ), у логов ротация.
+Пакеты, nginx, firewall и systemd скрипты не трогают.
+Удалить всё целиком: `cd /opt/gift-market-watcher/src/gift-market-watcher && docker compose --profile '*' down -v && rm -rf /opt/gift-market-watcher`.
+
 ## Запуск без Docker
 
 Нужны Postgres и Redis (адреса — в `.env`).

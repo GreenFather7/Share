@@ -92,7 +92,7 @@ def main() -> None:
 
         async def serve():
             st = await Storage.connect(s.database_url)
-            app = create_app(st, RedisLive(aioredis.from_url(s.redis_url, decode_responses=True)))
+            app = create_app(st, RedisLive(aioredis.from_url(s.redis_url, decode_responses=True)), s.api_token)
             await uvicorn.Server(uvicorn.Config(app, host=s.api_host, port=s.api_port)).serve()
         asyncio.run(serve())
     elif args.cmd == "initdb":
