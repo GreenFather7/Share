@@ -101,6 +101,8 @@ async def call(client, req, stats: Stats, delay: float):
 
 async def load_catalog(client, stats, delay):
     res = await call(client, functions.payments.GetStarGiftsRequest(hash=0), stats, delay)
+    if res is None:
+        raise SystemExit("Не удалось загрузить каталог коллекций — см. ошибку выше")
     collections = []
     for g in res.gifts:
         on_resale = getattr(g, "availability_resale", None) or 0
