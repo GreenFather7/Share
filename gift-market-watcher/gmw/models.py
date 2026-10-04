@@ -31,6 +31,12 @@ class Listing:
     price_stars: int | None = None
     price_ton: float | None = None
     owner: str | None = None
+    model: str | None = None     # атрибуты NFT: модель, фон, узор
+    backdrop: str | None = None
+    pattern: str | None = None
+
+    def attrs(self) -> dict:
+        return {"model": self.model, "backdrop": self.backdrop, "pattern": self.pattern}
 
     def same_price(self, other: "Listing") -> bool:
         return (self.price_stars, self.price_ton) == (other.price_stars, other.price_ton)
@@ -50,6 +56,9 @@ class Event:
     from_owner: str | None = None  # продавец / тот, от кого ушёл гифт
     to_owner: str | None = None    # покупатель / получатель
     ts: datetime = field(default_factory=utcnow)
+    model: str | None = None
+    backdrop: str | None = None
+    pattern: str | None = None
 
     @property
     def id(self) -> uuid.UUID:

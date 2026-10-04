@@ -55,3 +55,12 @@ CREATE TABLE IF NOT EXISTS collections (
     floor_stars bigint,
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
+
+-- Атрибуты NFT (добавлены позже — ALTER, чтобы обновлялись и существующие базы).
+ALTER TABLE events   ADD COLUMN IF NOT EXISTS model text;
+ALTER TABLE events   ADD COLUMN IF NOT EXISTS backdrop text;
+ALTER TABLE events   ADD COLUMN IF NOT EXISTS pattern text;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS model text;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS backdrop text;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS pattern text;
+CREATE INDEX IF NOT EXISTS listings_attr_idx ON listings (collection_id, model, backdrop) WHERE active;

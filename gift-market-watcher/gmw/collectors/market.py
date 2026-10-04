@@ -2,7 +2,7 @@
 
 * Горячий скан — первая страница коллекции (сервер сортирует по времени изменения цены, новые сверху).
   Частота адаптивная: нашли изменения — смотрим чаще, тишина — реже.
-* Полный скан — все страницы коллекции, реже. Только он ловит продажи и снятия.
+* Полный скан — все страницы коллекции в стабильном порядке (по номеру), реже. Только он ловит продажи и снятия.
 * Первый полный скан коллекции не порождает событий: это «посев» текущего состояния.
 """
 
@@ -23,7 +23,10 @@ class MarketAPI(Protocol):
     source: str
 
     async def catalog(self) -> list[Collection]: ...
-    async def page(self, collection_id: int, offset: str, limit: int) -> tuple[list[Listing], str | None]: ...
+    async def page(self, collection_id: int, offset: str, limit: int,
+                   sort: str = "recent") -> tuple[list[Listing], str | None]:
+        """sort="recent" — по времени изменения цены (новые сверху), для горячего скана;
+        sort="num" — по номеру гифта: порядок не плывёт, пока листаем, — для полного обхода."""
     async def gift_state(self, slug: str) -> GiftState | None: ...
 
 
@@ -68,7 +71,7 @@ class MarketCollector:
         self.next_catalog = now + self.catalog_interval
 
     async def hot(self, cid: int) -> int:
-        listings, _ = await self.api.page(cid, "", self.page_limit)
+        listings, _ = await self.api.page(cid, "", self.page_limit, "recent")
         cur = {l.slug: l for l in listings}
         prev = self.snapshot.setdefault(cid, {})
         events = diff_changes(prev, cur, self.api.source, utcnow())
@@ -84,7 +87,9 @@ class MarketCollector:
         seed_ts = utcnow()  # момент начала обхода: всё, что изменилось позже, новее снимка
         offset = ""
         while True:
-            listings, offset = await self.api.page(cid, offset, self.page_limit)
+            # По номеру, а не по времени: иначе лоты, сменившие цену во время обхода, прыгают наверх,
+            # страницы съезжают, и курсоры начинают повторяться.
+            listings, offset = await self.api.page(cid, offset, self.page_limit, "num")
             cur.update((l.slug, l) for l in listings)
             if not offset or not listings:
                 break

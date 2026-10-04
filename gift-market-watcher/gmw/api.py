@@ -52,6 +52,14 @@ def create_app(storage: Storage, live: Live, token: str | None = None) -> FastAP
     async def floors():
         return await storage.floors()
 
+    @app.get("/floors/{collection_id}", dependencies=guarded)
+    async def attribute_floors(collection_id: int, by: str = "model"):
+        """Флоры по комбинациям: ?by=model,backdrop — самый дешёвый лот каждой комбинации («Где купить»)."""
+        try:
+            return await storage.attribute_floors(collection_id, by.split(","))
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
     @app.websocket("/live")
     async def live_feed(ws: WebSocket, type: str | None = None, collection_id: int | None = None,
                         source: str | None = None):

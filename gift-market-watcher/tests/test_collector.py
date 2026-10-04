@@ -82,3 +82,38 @@ async def test_step_picks_due_task_and_survives_errors():
     kind, cid, n = await col.step()
     assert (kind, n) == ("hot", 0)
     assert col.sched[cid].next_hot == clock.t + col.hot_max
+
+
+@pytest.mark.asyncio
+async def test_full_scan_is_stable_while_market_moves():
+    """Маркет меняется прямо во время листания. По «recent» страницы съезжают и лоты теряются,
+    по номеру — полный обход видит каждый лот, который жил всё время обхода."""
+    def moving(market, sort_override=None):
+        orig = market.page
+
+        async def page(cid, offset, limit, sort="recent"):
+            res = await orig(cid, offset, limit, sort_override or sort)
+            for slug in list(market.lots)[:3]:  # трое меняют цену → всплывают наверх «recent»
+                lot = market.lots[slug]
+                market.clock += 1
+                market.lots[slug] = type(lot)(lot.listing, market.clock)
+            return res
+        market.page = page
+
+    def run(sort_override):
+        market = FakeMarket(collections=1, lots=300, seed=5)
+        stable = set(market.lots)
+        moving(market, sort_override)
+        col = MarketCollector(market, MemoryBus(), page_limit=20, clock=Clock())
+        return market, col, stable
+
+    market, col, stable = run(None)  # по умолчанию полный обход идёт по номеру
+    await col.refresh_catalog()
+    cid = next(iter(col.sched))
+    await col.full(cid)
+    assert stable <= set(col.snapshot[cid])
+
+    market, col, stable = run("recent")  # контрольный: так было бы по времени изменения
+    await col.refresh_catalog()
+    await col.full(cid)
+    assert not stable <= set(col.snapshot[cid])

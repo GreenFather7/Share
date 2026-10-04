@@ -30,6 +30,17 @@ def owner_of(gift) -> str | None:
     return str(peer)
 
 
+def attrs_of(gift) -> dict:
+    """Модель, фон и узор из gift.attributes (StarGiftAttributeModel / Backdrop / Pattern)."""
+    out = {"model": None, "backdrop": None, "pattern": None}
+    for a in getattr(gift, "attributes", None) or []:
+        kind = type(a).__name__
+        for key, marker in (("model", "Model"), ("backdrop", "Backdrop"), ("pattern", "Pattern")):
+            if marker in kind:
+                out[key] = getattr(a, "name", None)
+    return out
+
+
 def flood_seconds(e: Exception) -> int | None:
     return e.seconds if isinstance(e, errors.FloodWaitError) else None
 
@@ -60,14 +71,17 @@ class TelegramMarket:
                            getattr(g, "availability_resale", None) or 0, getattr(g, "resell_min_stars", None))
                 for g in res.gifts]
 
-    async def page(self, collection_id: int, offset: str, limit: int) -> tuple[list[Listing], str | None]:
-        # Без sort_by_price / sort_by_num — сортировка по времени последнего изменения цены, новые сверху.
+    async def page(self, collection_id: int, offset: str, limit: int,
+                   sort: str = "recent") -> tuple[list[Listing], str | None]:
+        # Без sort_by_* — по времени последнего изменения цены, новые сверху (горячий скан).
+        # sort_by_num — стабильный порядок для полного обхода.
         res = await self.pool.call(functions.payments.GetResaleStarGiftsRequest(
-            gift_id=collection_id, offset=offset, limit=limit))
+            gift_id=collection_id, offset=offset, limit=limit, sort_by_num=(sort == "num") or None))
         listings = []
         for g in res.gifts:
             stars, ton = price_of(g)
-            listings.append(Listing(g.slug, collection_id, getattr(g, "num", None), stars, ton, owner_of(g)))
+            listings.append(Listing(g.slug, collection_id, getattr(g, "num", None), stars, ton, owner_of(g),
+                                    **attrs_of(g)))
         return listings, getattr(res, "next_offset", None)
 
     async def gift_state(self, slug: str) -> GiftState | None:

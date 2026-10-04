@@ -11,7 +11,7 @@ from .models import Collection, Event, EventType, Listing
 SCHEMA = Path(__file__).with_name("schema.sql")
 
 _EVENT_COLS = ("id", "ts", "type", "source", "slug", "collection_id", "num", "price_stars", "price_ton",
-               "prev_price_stars", "prev_price_ton", "from_owner", "to_owner")
+               "prev_price_stars", "prev_price_ton", "from_owner", "to_owner", "model", "backdrop", "pattern")
 
 
 class Storage:
@@ -37,13 +37,15 @@ class Storage:
         if not events:
             return []
         rows = [(e.id, e.ts, e.type.value, e.source, e.slug, e.collection_id, e.num, e.price_stars,
-                 e.price_ton, e.prev_price_stars, e.prev_price_ton, e.from_owner, e.to_owner) for e in events]
+                 e.price_ton, e.prev_price_stars, e.prev_price_ton, e.from_owner, e.to_owner,
+                 e.model, e.backdrop, e.pattern) for e in events]
         async with self.pool.acquire() as con, con.transaction():
             inserted = await con.fetch(f"""
                 INSERT INTO events ({", ".join(_EVENT_COLS)})
                 SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::text[], $5::text[],
                                      $6::bigint[], $7::int[], $8::bigint[], $9::numeric[], $10::bigint[],
-                                     $11::numeric[], $12::text[], $13::text[])
+                                     $11::numeric[], $12::text[], $13::text[], $14::text[], $15::text[],
+                                     $16::text[])
                 ON CONFLICT (id) DO NOTHING
                 RETURNING id""", *zip(*rows))
             new_ids = {r["id"] for r in inserted}
@@ -55,13 +57,18 @@ class Storage:
     async def _apply(self, con, e: Event) -> None:
         if e.type in (EventType.LISTED, EventType.PRICE_CHANGED):
             await con.execute("""
-                INSERT INTO listings (source, slug, collection_id, num, price_stars, price_ton, owner, active, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)
+                INSERT INTO listings (source, slug, collection_id, num, price_stars, price_ton, owner, active,
+                                      updated_at, model, backdrop, pattern)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)
                 ON CONFLICT (source, slug) DO UPDATE SET price_stars = EXCLUDED.price_stars,
                     price_ton = EXCLUDED.price_ton, owner = COALESCE(EXCLUDED.owner, listings.owner),
-                    active = true, updated_at = EXCLUDED.updated_at
+                    active = true, updated_at = EXCLUDED.updated_at,
+                    model = COALESCE(EXCLUDED.model, listings.model),
+                    backdrop = COALESCE(EXCLUDED.backdrop, listings.backdrop),
+                    pattern = COALESCE(EXCLUDED.pattern, listings.pattern)
                 WHERE listings.updated_at <= EXCLUDED.updated_at""",
-                e.source, e.slug, e.collection_id, e.num, e.price_stars, e.price_ton, e.from_owner, e.ts)
+                e.source, e.slug, e.collection_id, e.num, e.price_stars, e.price_ton, e.from_owner, e.ts,
+                e.model, e.backdrop, e.pattern)
             owner = e.from_owner
         elif e.type in (EventType.SOLD, EventType.DELISTED, EventType.BURNED):
             # Не удаляем, а гасим с меткой времени: иначе запоздалый посев «воскресит» проданный лот.
@@ -94,13 +101,16 @@ class Storage:
                 WHERE source = $1 AND collection_id = $2 AND updated_at <= $4 AND active AND NOT slug = ANY($3::text[])""",
                 source, collection_id, [l.slug for l in listings], ts)
             await con.executemany("""
-                INSERT INTO listings (source, slug, collection_id, num, price_stars, price_ton, owner, active, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)
+                INSERT INTO listings (source, slug, collection_id, num, price_stars, price_ton, owner, active,
+                                      updated_at, model, backdrop, pattern)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)
                 ON CONFLICT (source, slug) DO UPDATE SET price_stars = EXCLUDED.price_stars,
                     price_ton = EXCLUDED.price_ton, owner = EXCLUDED.owner, active = true,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = EXCLUDED.updated_at, model = EXCLUDED.model,
+                    backdrop = EXCLUDED.backdrop, pattern = EXCLUDED.pattern
                 WHERE listings.updated_at <= EXCLUDED.updated_at""",
-                [(source, l.slug, collection_id, l.num, l.price_stars, l.price_ton, l.owner, ts) for l in listings])
+                [(source, l.slug, collection_id, l.num, l.price_stars, l.price_ton, l.owner, ts,
+                  l.model, l.backdrop, l.pattern) for l in listings])
             await con.executemany("""
                 INSERT INTO gifts (slug, collection_id, num, owner, updated_at) VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (slug) DO UPDATE SET owner = EXCLUDED.owner, updated_at = EXCLUDED.updated_at
@@ -123,7 +133,8 @@ class Storage:
         for r in rows:
             out.setdefault(r["collection_id"], {})[r["slug"]] = Listing(
                 r["slug"], r["collection_id"], r["num"], r["price_stars"],
-                float(r["price_ton"]) if r["price_ton"] is not None else None, r["owner"])
+                float(r["price_ton"]) if r["price_ton"] is not None else None, r["owner"],
+                r["model"], r["backdrop"], r["pattern"])
         return out
 
     async def events(self, *, type: str | None = None, source: str | None = None,
@@ -160,6 +171,19 @@ class Storage:
                    MIN(l.price_stars) AS floor_stars, MIN(l.price_ton) AS floor_ton, COUNT(l.slug) AS tracked
             FROM collections c LEFT JOIN listings l ON l.collection_id = c.id AND l.active
             GROUP BY c.id ORDER BY c.on_resale DESC""")
+        return [_row(r) for r in rows]
+
+    async def attribute_floors(self, collection_id: int, by: list[str]) -> list[dict]:
+        """Флоры по комбинациям атрибутов внутри коллекции, например by=["model", "backdrop"]."""
+        cols = [c for c in by if c in ("model", "backdrop", "pattern")]
+        if not cols:
+            raise ValueError("by: model / backdrop / pattern")
+        group = ", ".join(cols)
+        rows = await self.pool.fetch(f"""
+            SELECT {group}, MIN(price_stars) AS floor_stars, MIN(price_ton) AS floor_ton, COUNT(*) AS listings,
+                   (ARRAY_AGG(slug ORDER BY price_stars NULLS LAST))[1] AS cheapest_slug
+            FROM listings WHERE active AND collection_id = $1
+            GROUP BY {group} ORDER BY floor_stars NULLS LAST""", collection_id)
         return [_row(r) for r in rows]
 
     async def stats(self) -> dict:

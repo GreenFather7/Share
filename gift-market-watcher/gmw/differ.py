@@ -25,7 +25,7 @@ Resolver = Callable[[str], Awaitable[GiftState | None]]
 
 def _listed(cur: Listing, source: str, ts: datetime) -> Event:
     return Event(EventType.LISTED, source, cur.slug, cur.collection_id, cur.num,
-                 cur.price_stars, cur.price_ton, from_owner=cur.owner, ts=ts)
+                 cur.price_stars, cur.price_ton, from_owner=cur.owner, ts=ts, **cur.attrs())
 
 
 def diff_changes(prev: Mapping[str, Listing], cur: Mapping[str, Listing],
@@ -39,12 +39,13 @@ def diff_changes(prev: Mapping[str, Listing], cur: Mapping[str, Listing],
         elif p.owner and c.owner and p.owner != c.owner:
             # Купили и тут же перевыставили, пока мы не смотрели: продажа + новый листинг.
             events.append(Event(EventType.SOLD, source, slug, c.collection_id, c.num,
-                                p.price_stars, p.price_ton, from_owner=p.owner, to_owner=c.owner, ts=ts))
+                                p.price_stars, p.price_ton, from_owner=p.owner, to_owner=c.owner, ts=ts,
+                                **c.attrs()))
             events.append(_listed(c, source, ts))
         elif not p.same_price(c):
             events.append(Event(EventType.PRICE_CHANGED, source, slug, c.collection_id, c.num,
                                 c.price_stars, c.price_ton, p.price_stars, p.price_ton,
-                                from_owner=c.owner, ts=ts))
+                                from_owner=c.owner, ts=ts, **c.attrs()))
     return events
 
 
@@ -61,8 +62,9 @@ async def diff_full(prev: Mapping[str, Listing], cur: Mapping[str, Listing], res
             continue
         if state is not None and state.owner and p.owner and state.owner != p.owner:
             events.append(Event(EventType.SOLD, source, slug, p.collection_id, p.num,
-                                p.price_stars, p.price_ton, from_owner=p.owner, to_owner=state.owner, ts=ts))
+                                p.price_stars, p.price_ton, from_owner=p.owner, to_owner=state.owner, ts=ts,
+                                **p.attrs()))
         else:
             events.append(Event(EventType.DELISTED, source, slug, p.collection_id, p.num,
-                                p.price_stars, p.price_ton, from_owner=p.owner, ts=ts))
+                                p.price_stars, p.price_ton, from_owner=p.owner, ts=ts, **p.attrs()))
     return events, snapshot

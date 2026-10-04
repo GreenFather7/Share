@@ -11,6 +11,9 @@ from ..differ import GiftState
 from ..models import Collection, Listing
 
 NAMES = ["Plush Pepe", "Durov's Cap", "Timeless Book", "Chill Flame", "Happy Brownie", "Swiss Watch"]
+MODELS = ["Unfinished", "Dragon Age", "Mystique", "Ice Nine", "Bull Run"]
+BACKDROPS = ["Electric Indigo", "Turquoise", "Onyx Black", "Sapphire", "Roman Silver", "Malachite"]
+PATTERNS = ["Stars", "Hearts", "Spiral", "Waves"]
 
 
 @dataclass
@@ -40,7 +43,9 @@ class FakeMarket:
         self.next_num[cid] += 1
         slug = f"{self._title(cid).replace(' ', '').replace(chr(39), '')}-{num}"
         owner = self.owners.setdefault(slug, f"u{self.rng.randint(1, 10_000)}")
-        self.lots[slug] = _Lot(Listing(slug, cid, num, self.rng.randint(100, 5000), None, owner), self.clock)
+        self.lots[slug] = _Lot(Listing(slug, cid, num, self.rng.randint(100, 5000), None, owner,
+                                       self.rng.choice(MODELS), self.rng.choice(BACKDROPS),
+                                       self.rng.choice(PATTERNS)), self.clock)
 
     def _title(self, cid: int) -> str:
         return next(c.title for c in self.cols if c.id == cid)
@@ -77,9 +82,13 @@ class FakeMarket:
             out.append(replace(c, on_resale=len(prices), floor_stars=min(prices) if prices else None))
         return out
 
-    async def page(self, collection_id: int, offset: str, limit: int) -> tuple[list[Listing], str | None]:
-        lots = sorted((l for l in self.lots.values() if l.listing.collection_id == collection_id),
-                      key=lambda l: l.changed, reverse=True)
+    async def page(self, collection_id: int, offset: str, limit: int,
+                   sort: str = "recent") -> tuple[list[Listing], str | None]:
+        lots = [l for l in self.lots.values() if l.listing.collection_id == collection_id]
+        if sort == "num":
+            lots.sort(key=lambda l: l.listing.num)
+        else:
+            lots.sort(key=lambda l: l.changed, reverse=True)
         start = int(offset or 0)
         chunk = lots[start:start + limit]
         nxt = str(start + limit) if start + limit < len(lots) else None

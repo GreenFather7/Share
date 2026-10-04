@@ -110,6 +110,17 @@ async def test_end_to_end(env):
         assert gift["events"][0]["slug"] == slug
         assert (await http.get("/gifts/nope-1")).status_code == 404
         assert (await http.get("/events", params={"type": "bogus"})).status_code == 422
+        # Атрибуты доезжают до базы, флоры по комбинациям совпадают с маркетом.
+        cid = market.cols[0].id
+        combos = (await http.get(f"/floors/{cid}", params={"by": "model,backdrop"})).json()
+        expected = {}
+        for l in market.lots.values():
+            if l.listing.collection_id == cid:
+                k = (l.listing.model, l.listing.backdrop)
+                expected[k] = min(expected.get(k, 10**9), l.listing.price_stars)
+        assert {(c["model"], c["backdrop"]): c["floor_stars"] for c in combos} == expected
+        assert all(c["cheapest_slug"] for c in combos)
+        assert (await http.get(f"/floors/{cid}", params={"by": "color"})).status_code == 422
 
     # С токеном: без него — 401, /health открыт.
     app = create_app(st, live, token="s3cret")
