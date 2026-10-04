@@ -4,3 +4,5 @@
 bench_out/
 __pycache__/
 .venv/
+sessions/
+.pytest_cache/
