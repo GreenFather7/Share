@@ -43,7 +43,7 @@ def owner_of(gift) -> str | None:
 def listing_of(gift, collection_id: int) -> Listing:
     stars, ton = price_of(gift)
     return Listing(gift.slug, collection_id, getattr(gift, "num", None), stars, ton, owner_of(gift),
-                   **attrs_of(gift), ton_only=bool(getattr(gift, "resale_ton_only", False)))
+                   **attrs_of(gift), ton_only=getattr(gift, "resale_ton_only", None))  # нет поля → неизвестно
 
 
 def attrs_of(gift) -> dict:
@@ -71,17 +71,20 @@ class TelegramMarket:
 
     @classmethod
     async def connect(cls, sessions: list[str], api_id: int, api_hash: str,
-                      min_interval: float = 2.0, state_path: str | None = "flood_state.json") -> "TelegramMarket":
+                      min_interval: float = 2.0, state_path: str | None = "flood_state.json",
+                      reroute_on_flood: bool = True) -> "TelegramMarket":
         clients = []
         for s in sessions:
             # flood_sleep_threshold=0: любой FLOOD_WAIT поднимается к нам, а не «досыпается» внутри Telethon
-            # (по умолчанию он молча спит на ожиданиях до 60 с). request_retries=1: без скрытых повторов.
-            c = TelegramClient(s, api_id, api_hash, flood_sleep_threshold=0, request_retries=1)
+            # (по умолчанию он молча спит на ожиданиях до 60 с).
+            # request_retries=0: ровно одна отправка (в Telethon 1 = отправка + один повтор).
+            c = TelegramClient(s, api_id, api_hash, flood_sleep_threshold=0, request_retries=0)
             await c.connect()
             if not await c.is_user_authorized():
                 raise SystemExit(f"Сессия {s} не авторизована — сначала: python -m gmw login")
             clients.append(c)
-        return cls(AccountPool(clients, min_interval, flood_seconds, names=sessions, state_path=state_path))
+        return cls(AccountPool(clients, min_interval, flood_seconds, names=sessions, state_path=state_path,
+                               reroute_on_flood=reroute_on_flood))
 
     async def catalog(self) -> list[Collection]:
         res = await self.pool.call(functions.payments.GetStarGiftsRequest(hash=0))

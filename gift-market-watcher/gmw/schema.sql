@@ -72,3 +72,6 @@ ALTER TABLE listings ALTER COLUMN price_stars      TYPE numeric(24, 9);
 ALTER TABLE collections ALTER COLUMN floor_stars   TYPE numeric(24, 9);
 ALTER TABLE events   ADD COLUMN IF NOT EXISTS ton_only boolean;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS ton_only boolean;
+
+-- Когда котировки лота последний раз обновлялись без события (пересчёт TON по курсу).
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS quoted_at timestamptz;

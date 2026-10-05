@@ -53,11 +53,14 @@ async def cmd_collect(s: config.Settings, source: str) -> None:
         if not (s.tg_api_id and s.tg_api_hash):
             raise SystemExit("Нужны TG_API_ID и TG_API_HASH в .env")
         api = await TelegramMarket.connect(s.tg_sessions, s.tg_api_id, s.tg_api_hash, s.request_interval,
-                                           s.flood_state)
+                                           s.flood_state, s.reroute_on_flood)
     snapshot = await st.load_listings(api.source)
     await st.close()
-    collector = MarketCollector(api, bus, snapshot, hot_min=s.hot_min, hot_max=s.hot_max,
-                                full_interval=s.full_interval)
+    from .state import CollectorState
+    # Локальное состояние (снимок + outbox) — источник правды для сборщика. Снимок из Postgres нужен только
+    # при первом запуске, пока локального состояния нет.
+    collector = MarketCollector(api, bus, snapshot, state=CollectorState(f"{api.source}-{s.state_path}"),
+                                hot_min=s.hot_min, hot_max=s.hot_max, full_interval=s.full_interval)
     # По умолчанию — столько параллельных задач, сколько аккаунтов (у фейка — 4).
     workers = s.workers or (api.pool.size if hasattr(api, "pool") else 4)
     await collector.run(workers=workers, max_full=s.max_full)

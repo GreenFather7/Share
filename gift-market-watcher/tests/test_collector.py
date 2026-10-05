@@ -115,8 +115,10 @@ async def test_full_scan_is_stable_while_market_moves():
 
     market, col, stable = run("recent")  # контрольный: так было бы по времени изменения
     await col.refresh_catalog()
-    await col.full(cid)
-    assert not stable <= set(col.snapshot[cid])
+    scan = await col.scan_all(cid)
+    assert not stable <= set(scan.listings)       # лоты потерялись…
+    assert not scan.complete                      # …и обход сам это распознал (порядок / дубли)
+    assert scan.status in ("order", "duplicates")
 
 
 # ---------- находки ревью GPT ----------
@@ -179,7 +181,7 @@ async def test_scan_far_below_server_count_is_incomplete():
     market = ScriptedMarket(lambda off: ([lot(1)], None), count=500, on_resale=500)
     col = await seeded(market, [lot(1), lot(2)])
     scan = await col.scan_all(1)
-    assert not scan.complete and "собрано 1 из ~500" in scan.reason
+    assert not scan.complete and scan.status == "short" and "собрано 1 из 500" in scan.reason
 
 
 @pytest.mark.asyncio
@@ -191,29 +193,123 @@ async def test_page_budget_stops_endless_cursors():
     assert market.calls == col._max_pages(1)
 
 
+class FlakyBus(MemoryBus):
+    """Шина, которой можно сказать: упади до записи / запиши, но «потеряй» ответ."""
+    def __init__(self):
+        super().__init__()
+        self.mode = "ok"
+
+    async def publish_batch(self, messages):
+        if self.mode == "down":
+            raise ConnectionError("Redis упал")
+        await super().publish_batch(messages)
+        if self.mode == "lost_ack":
+            raise TimeoutError("записали, но ответ не дошёл")
+
+
+async def setup_flaky(seed):
+    market = FakeMarket(collections=1, lots=20, seed=seed)
+    bus = FlakyBus()
+    col = MarketCollector(market, bus, clock=Clock())
+    await col.refresh_catalog()
+    cid = next(iter(col.sched))
+    await col.full(cid)
+    await drain(bus)
+    return market, bus, col, cid
+
+
+def event_ids(msgs):
+    return [m["data"]["id"] for m in msgs if m["kind"] == "event"]
+
+
 @pytest.mark.asyncio
 async def test_publish_failure_does_not_lose_the_change():
-    """Находка №6: раньше снимок обновлялся до отправки — после сбоя шины событие терялось навсегда."""
-    market = FakeMarket(collections=1, lots=20, seed=11)
+    """Находка №6: шина упала до записи — изменение сохранено в outbox и уходит, когда шина поднялась."""
+    market, bus, col, cid = await setup_flaky(11)
+    market.mutate(5)
+    bus.mode = "down"
+    n = await col.hot(cid)
+    assert n > 0 and await drain(bus) == [] and col.state.outbox_size() >= n
+    bus.mode = "ok"
+    await col.flush()
+    assert len(event_ids(await drain(bus))) == n and col.state.outbox_size() == 0
+
+
+@pytest.mark.asyncio
+async def test_observation_survives_market_reverting_while_bus_is_down():
+    """Повторное ревью №3: увидели A→B, шина лежит, рынок вернулся к A — переход B не должен пропасть."""
+    from dataclasses import replace
+    market, bus, col, cid = await setup_flaky(21)
+    slug, lot = next((s, l) for s, l in market.lots.items() if not l.listing.ton_only)
+    original = lot.listing
+    market.clock += 1
+    market.lots[slug] = type(lot)(replace(original, price_stars=original.price_stars + 7), market.clock)
+    bus.mode = "down"
+    await col.hot(cid)
+    market.clock += 1
+    market.lots[slug] = type(lot)(original, market.clock)  # вернули цену назад
+    await col.hot(cid)
+    bus.mode = "ok"
+    await col.flush()
+    changes = [m["data"] for m in await drain(bus) if m["kind"] == "event" and m["data"]["slug"] == slug]
+    assert [(e["prev_price_stars"], e["price_stars"]) for e in changes] == \
+        [(original.price_stars, original.price_stars + 7), (original.price_stars + 7, original.price_stars)]
+
+
+@pytest.mark.asyncio
+async def test_lost_bus_ack_redelivers_the_same_event_ids():
+    """Повторное ревью №3: шина записала, ответ потерялся — повтор несёт те же id (база их дедуплицирует)."""
+    market, bus, col, cid = await setup_flaky(22)
+    market.mutate(5)
+    bus.mode = "lost_ack"
+    await col.hot(cid)
+    first = event_ids(await drain(bus))
+    bus.mode = "ok"
+    await col.flush()
+    second = event_ids(await drain(bus))
+    assert first and first == second
+    assert await col.hot(cid) == 0  # и заново тот же переход не находится
+
+
+@pytest.mark.asyncio
+async def test_restart_after_publish_does_not_reemit(tmp_path):
+    """Повторное ревью №3: сборщик перезапустился после отправки — тот же переход не порождается заново."""
+    from gmw.state import CollectorState
+    path = str(tmp_path / "state.sqlite")
+    market = FakeMarket(collections=1, lots=20, seed=23)
+    bus = MemoryBus()
+    col = MarketCollector(market, bus, state=CollectorState(path), clock=Clock())
+    await col.refresh_catalog()
+    cid = next(iter(col.sched))
+    await col.full(cid)
+    market.mutate(5)
+    assert await col.hot(cid) > 0
+    col.state.close()
+
+    # «Рестарт»: в Postgres снимок старый (воркер не успел), но локальное состояние новое — его и берём.
+    stale_db_snapshot = {cid: {}}
+    col2 = MarketCollector(market, bus, stale_db_snapshot, state=CollectorState(path), clock=Clock())
+    await col2.refresh_catalog()
+    assert await col2.hot(cid) == 0
+
+
+@pytest.mark.asyncio
+async def test_fx_drift_sends_quotes_not_events():
+    """Повторное ревью №4: котировки сменились по курсу — событий нет, но база получает новые цены."""
+    market = FakeMarket(collections=1, lots=50, seed=24)
     bus = MemoryBus()
     col = MarketCollector(market, bus, clock=Clock())
     await col.refresh_catalog()
     cid = next(iter(col.sched))
     await col.full(cid)
     await drain(bus)
-    market.mutate(5)
-
-    real = bus.publish_batch
-
-    async def broken(messages):
-        raise ConnectionError("Redis упал")
-    bus.publish_batch = broken
-    assert await col._execute("hot", cid) == 0  # ошибка поймана
-    assert await drain(bus) == []
-
-    bus.publish_batch = real
-    n = await col.hot(cid)
-    assert n > 0 and len([m for m in await drain(bus) if m["kind"] == "event"]) == n
+    market.fx_drift()
+    assert await col.hot(cid) == 0
+    msgs = await drain(bus)
+    assert event_ids(msgs) == []
+    quotes = [m["data"] for m in msgs if m["kind"] == "quotes"]
+    assert quotes and all(r["price_ton"] == market.lots[r["slug"]].listing.price_ton
+                          for r in quotes[0]["listings"])
 
 
 @pytest.mark.asyncio
@@ -226,6 +322,59 @@ async def test_fx_drift_produces_no_events():
     market.fx_drift()
     assert await col.hot(cid) == 0
     assert await col.full(cid) == 0
+
+
+# ---------- согласованность полного обхода (повторное ревью №5) ----------
+
+def paged(pages_by_offset):
+    return lambda off: pages_by_offset[off]
+
+
+@pytest.mark.asyncio
+async def test_count_drift_is_not_complete():
+    counts = iter([4, 5, 6])
+
+    class Drifting(ScriptedMarket):
+        async def page(self, cid, offset, limit, sort="recent"):
+            from gmw.collectors.market import Page
+            listings, nxt = self.pages(offset)
+            return Page(listings, nxt, next(counts))
+    market = Drifting(paged({"": ([lot(1), lot(2)], "a"), "a": ([lot(3), lot(4)], "b"), "b": ([lot(5), lot(6)], None)}))
+    col = await seeded(market, [lot(1)])
+    scan = await col.scan_all(1)
+    assert not scan.complete and scan.status == "count_drift"
+
+
+@pytest.mark.asyncio
+async def test_duplicates_are_not_complete():
+    market = ScriptedMarket(paged({"": ([lot(1), lot(2)], "a"), "a": ([lot(2), lot(3)], None)}), count=3)
+    col = await seeded(market, [lot(1)])
+    scan = await col.scan_all(1)
+    assert not scan.complete and scan.status == "duplicates" and scan.duplicates == 1
+
+
+@pytest.mark.asyncio
+async def test_out_of_order_numbers_are_not_complete():
+    market = ScriptedMarket(paged({"": ([lot(3), lot(1)], "a"), "a": ([lot(2)], None)}), count=3)
+    col = await seeded(market, [lot(1)])
+    scan = await col.scan_all(1)
+    assert not scan.complete and scan.status == "order"
+
+
+@pytest.mark.asyncio
+async def test_empty_terminal_page_with_positive_count_is_short():
+    market = ScriptedMarket(paged({"": ([], None)}), count=5, on_resale=5)
+    col = await seeded(market, [lot(1)])
+    scan = await col.scan_all(1)
+    assert not scan.complete and scan.status == "short"
+
+
+@pytest.mark.asyncio
+async def test_consistent_scan_is_complete():
+    market = ScriptedMarket(paged({"": ([lot(1), lot(2)], "a"), "a": ([lot(3)], None)}), count=3)
+    col = await seeded(market, [lot(1)])
+    scan = await col.scan_all(1)
+    assert scan.complete and scan.status == "complete" and scan.counts == (3, 3)
 
 
 @pytest.mark.asyncio

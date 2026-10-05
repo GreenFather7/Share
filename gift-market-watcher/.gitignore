@@ -8,3 +8,6 @@ sessions/
 .pytest_cache/
 dump.rdb
 flood_state.json
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

@@ -32,6 +32,8 @@ async def handle_batch(msgs: list[tuple[str, dict]], storage: Storage, live: Liv
         await flush()
         if kind == "collection":
             await storage.upsert_collection(Collection(**data))
+        elif kind == "quotes":
+            await storage.update_quotes(data["source"], datetime.fromisoformat(data["ts"]), data["listings"])
         elif kind == "seed":
             await storage.seed_listings(data["source"], data["collection_id"],
                                         [Listing(**l) for l in data["listings"]], datetime.fromisoformat(data["ts"]))

@@ -121,6 +121,14 @@ class Storage:
                 WHERE gifts.updated_at <= EXCLUDED.updated_at""",
                 [(l.slug, collection_id, l.num, l.owner, ts) for l in listings if l.owner])
 
+    async def update_quotes(self, source: str, ts: datetime, rows: list[dict]) -> None:
+        """Котировки лота пересчитались по курсу (цена продавца та же) — обновить цены без события."""
+        await self.pool.executemany("""
+            UPDATE listings SET price_stars = $3, price_ton = $4, quoted_at = $5
+            WHERE source = $1 AND slug = $2 AND active AND updated_at <= $5
+              AND (quoted_at IS NULL OR quoted_at <= $5)""",
+            [(source, r["slug"], r["price_stars"], r["price_ton"], ts) for r in rows])
+
     async def upsert_collection(self, c: Collection) -> None:
         await self.pool.execute("""
             INSERT INTO collections (id, title, on_resale, floor_stars, updated_at) VALUES ($1, $2, $3, $4, now())

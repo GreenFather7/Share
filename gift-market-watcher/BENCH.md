@@ -42,16 +42,26 @@ cd ~/gift-bench
 python3 -m venv .venv && source .venv/bin/activate
 pip install "telethon>=1.40" "python-dotenv>=1.0"
 cp .env.example .env      # вписать TG_API_ID, TG_API_HASH; TG_SESSION=bench (имя файла без .session)
-python bench.py           # пауза 1.5 с, бюджет полного обхода 300 запросов; на первом FLOOD_WAIT — стоп и отчёт
+python bench.py --login   # только если сессии ещё нет: вход (номер, код, 2FA), замер не выполняется
+python bench.py           # каталог + горячий скан + полный обход (бюджет 300 запросов), пауза 1.5 с, дедлайн 10 мин
 ```
 
-Если первый прогон прошёл без FLOOD_WAIT, сделай второй, жёстче, чтобы найти лимит:
+Правила безопасности, встроенные в скрипт:
+- ровно одна отправка на запрос (`request_retries=0`), Telethon сам на флудах не спит (`flood_sleep_threshold=0`);
+- первый `FLOOD_WAIT` или любая непонятная ошибка или таймаут — стоп, новых запросов нет, отчёт пишется всё равно;
+- общий дедлайн `--max-seconds` (по умолчанию 600); перед каждым запросом на ответ остаётся `--reserve` (30 с);
+- в отчёт и на экран не попадают имя и UID аккаунта и владельцы лотов.
+
+Варианты:
 ```bash
-python bench.py --delay 1.0 --full-budget 600
+python bench.py --hot 0 --collection <id> --full-budget 400   # полный обход одной коллекции (id печатается в каталоге)
+python bench.py --hot 0 --min-lots 1000 --full-budget 400     # полный обход, начиная с коллекций от 1000 лотов
+python bench.py --delay 2 --max-seconds 600                   # долгий прогон на паузе 2 с
 ```
-Перед вторым прогоном сохрани отчёт первого: `cp bench_out/report.json bench_out/report_1.json`.
 
-Если ошибка «Telethon слишком старый», выполни `pip install -U telethon`. Метод `getResaleStarGifts` есть только в свежих версиях.
+Статусы полного обхода по коллекции: `complete`, `repeated_cursor`, `empty_page_with_cursor`, `duplicates`,
+`order` (номера не по возрастанию), `count_drift` (количество от сервера плыло), `short` (собрано меньше
+количества), `budget`, `stopped`.
 
 ## Что вернуть Диму
 

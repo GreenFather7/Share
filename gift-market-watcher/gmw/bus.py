@@ -37,6 +37,8 @@ async def publish_collection(bus: Bus, c: Collection) -> None:
 
 
 class RedisBus:
+    # maxlen — защита Redis от бесконечного роста. Если нормализатор лежит так долго, что в шине накопился
+    # миллион сообщений, самые старые будут обрезаны: сборщик их уже не повторит (outbox считает их доставленными).
     def __init__(self, redis, consumer: str = "worker-1", maxlen: int = 1_000_000):
         self.r = redis
         self.consumer = consumer
@@ -63,6 +65,13 @@ class RedisBus:
     async def read(self, count: int = 500, block_ms: int = 1000) -> list[Message]:
         # После рестарта сначала дочитываем то, что взяли, но не подтвердили.
         if not self._pending_drained:
+            # Забираем себе зависшее у других (упавших) обработчиков дольше минуты, потом дочитываем своё.
+            try:
+                await self.r.xautoclaim(STREAM, GROUP, self.consumer, min_idle_time=60_000, start_id="0-0",
+                                        count=count)
+            except Exception as e:  # noqa: BLE001
+                if "NOGROUP" in str(e):
+                    raise
             msgs = await self._read("0", count, None)
             if msgs:
                 return msgs

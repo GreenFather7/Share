@@ -23,6 +23,8 @@ class Settings:
     workers: int | None
     max_full: int | None
     flood_state: str
+    state_path: str
+    reroute_on_flood: bool
 
 
 def load() -> Settings:
@@ -45,4 +47,6 @@ def load() -> Settings:
         workers=int(env("GMW_WORKERS")) if env("GMW_WORKERS") else None,
         max_full=int(env("GMW_MAX_FULL")) if env("GMW_MAX_FULL") else None,
         flood_state=env("GMW_FLOOD_STATE", "flood_state.json"),
+        state_path=env("GMW_STATE_PATH", "collector_state.sqlite"),
+        reroute_on_flood=env("GMW_REROUTE_ON_FLOOD", "1") not in ("0", "false", "no"),
     )

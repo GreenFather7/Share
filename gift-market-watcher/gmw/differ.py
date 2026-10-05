@@ -83,3 +83,17 @@ async def diff_full(prev: Mapping[str, Listing], cur: Mapping[str, Listing], res
         else:
             events.append(_ev(EventType.DELISTED, p, source, ts))
     return events, snapshot
+
+
+def quote_updates(prev: Mapping[str, Listing], cur: Mapping[str, Listing]) -> list[Listing]:
+    """Лоты, у которых цена продавца та же, а котировки другие (пересчёт по курсу).
+
+    Это не событие, но база и API должны видеть актуальные котировки.
+    """
+    out = []
+    for slug, c in cur.items():
+        p = prev.get(slug)
+        if (p is not None and p.same_price(c) and not (p.owner and c.owner and p.owner != c.owner)
+                and (p.price_stars, p.price_ton) != (c.price_stars, c.price_ton)):
+            out.append(c)
+    return out

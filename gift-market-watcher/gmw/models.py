@@ -46,11 +46,12 @@ class Listing:
         return {"model": self.model, "backdrop": self.backdrop, "pattern": self.pattern}
 
     def native_price(self) -> tuple[str, float | None]:
+        """("TON" | "XTR" | "?", сумма). "?" — валюту продавца из ответа не определить (нет признака и звёзд)."""
         if self.ton_only:
             return "TON", self.price_ton
         if self.price_stars is not None:
             return "XTR", self.price_stars
-        return "TON", self.price_ton  # звёздной котировки нет вовсе
+        return "?", self.price_ton
 
     def same_price(self, other: "Listing") -> bool:
         return self.native_price() == other.native_price()

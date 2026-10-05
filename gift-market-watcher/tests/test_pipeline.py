@@ -95,6 +95,17 @@ async def test_end_to_end(env):
         await col2.full(cid)
     assert await pump(bus, st, live) == 0
 
+    # Курс TON сменился: событий нет, а цены в базе — новые (повторное ревью №4).
+    total_before = (await st.stats())["events_total"]
+    market.fx_drift()
+    for cid in list(col2.sched):
+        await col2.hot(cid)
+        await col2.full(cid)
+    await pump(bus, st, live)
+    assert (await st.stats())["events_total"] == total_before
+    rows = await st.pool.fetch("SELECT slug, price_ton FROM listings WHERE active AND source = 'fake'")
+    assert rows and all(float(r["price_ton"]) == market.lots[r["slug"]].listing.price_ton for r in rows)
+
     # API читает из базы.
     app = create_app(st, live)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as http:
