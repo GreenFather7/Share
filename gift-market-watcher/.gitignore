@@ -7,3 +7,4 @@ __pycache__/
 sessions/
 .pytest_cache/
 dump.rdb
+flood_state.json

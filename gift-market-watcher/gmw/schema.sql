@@ -64,3 +64,11 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS model text;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS backdrop text;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS pattern text;
 CREATE INDEX IF NOT EXISTS listings_attr_idx ON listings (collection_id, model, backdrop) WHERE active;
+
+-- Звёзды с дробной частью (StarsAmount.nanos) и признак «продаётся только за TON».
+ALTER TABLE events   ALTER COLUMN price_stars      TYPE numeric(24, 9);
+ALTER TABLE events   ALTER COLUMN prev_price_stars TYPE numeric(24, 9);
+ALTER TABLE listings ALTER COLUMN price_stars      TYPE numeric(24, 9);
+ALTER TABLE collections ALTER COLUMN floor_stars   TYPE numeric(24, 9);
+ALTER TABLE events   ADD COLUMN IF NOT EXISTS ton_only boolean;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS ton_only boolean;

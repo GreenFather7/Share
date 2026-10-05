@@ -101,8 +101,8 @@ async def test_end_to_end(env):
         events = (await http.get("/events", params={"limit": 500})).json()
         assert len(events) == new
         assert all(e["collection_title"] for e in events)
-        sold = (await http.get("/events", params={"type": "sold"})).json()
-        assert all(e["type"] == "sold" and e["to_owner"] for e in sold)
+        sold = (await http.get("/events", params={"type": "owner_changed"})).json()
+        assert all(e["type"] == "owner_changed" and e["to_owner"] for e in sold)
         floors = (await http.get("/floors")).json()
         assert {f["collection_id"] for f in floors} == {c.id for c in market.cols}
         slug = events[0]["slug"]
@@ -117,7 +117,8 @@ async def test_end_to_end(env):
         for l in market.lots.values():
             if l.listing.collection_id == cid:
                 k = (l.listing.model, l.listing.backdrop)
-                expected[k] = min(expected.get(k, 10**9), l.listing.price_stars)
+                p = l.listing.price_stars
+                expected[k] = p if expected.get(k) is None else (expected[k] if p is None else min(expected[k], p))
         assert {(c["model"], c["backdrop"]): c["floor_stars"] for c in combos} == expected
         assert all(c["cheapest_slug"] for c in combos)
         assert (await http.get(f"/floors/{cid}", params={"by": "color"})).status_code == 422

@@ -64,6 +64,8 @@ class Stats:
     latencies: list = field(default_factory=list)
     flood_waits: list = field(default_factory=list)  # (номер запроса, секунды)
     errors: list = field(default_factory=list)
+    wait_on_flood: bool = False   # False — на первом FLOOD_WAIT замер останавливается (аккаунт не долбим)
+    stopped: str | None = None    # причина остановки
 
     def summary(self):
         lat = self.latencies or [0]
@@ -73,6 +75,7 @@ class Stats:
             "latency_p95_ms": round(sorted(lat)[max(0, int(len(lat) * 0.95) - 1)] * 1000),
             "flood_waits": self.flood_waits,
             "errors": self.errors[:20],
+            "stopped": self.stopped,
         }
 
 
@@ -90,6 +93,9 @@ async def call(client, req, stats: Stats, delay: float):
         except errors.FloodWaitError as e:
             stats.flood_waits.append((stats.requests, e.seconds))
             print(f"  ⚠️  FLOOD_WAIT {e.seconds}s на запросе #{stats.requests}")
+            if not stats.wait_on_flood:
+                stats.stopped = f"FLOOD_WAIT {e.seconds}s на запросе #{stats.requests}"
+                return None
             await asyncio.sleep(e.seconds + 1)
         except Exception as e:  # noqa: BLE001
             stats.errors.append(f"{type(e).__name__}: {e}")
@@ -117,11 +123,11 @@ async def load_catalog(client, stats, delay):
     return collections
 
 
-def resale_request(gift_id, offset, limit):
-    # Без sort_by_price / sort_by_num сервер сортирует по времени последнего изменения цены (новые сверху).
-    # Это и есть «горячий» поток: новые листинги и смены цены всплывают на первой странице.
+def resale_request(gift_id, offset, limit, by_num=False):
+    # Без sort_by_* сервер сортирует по времени последнего изменения цены (новые сверху) — «горячий» поток.
+    # Для полного обхода — sort_by_num: порядок по номеру не плывёт, пока листаем.
     return functions.payments.GetResaleStarGiftsRequest(
-        gift_id=gift_id, offset=offset, limit=limit,
+        gift_id=gift_id, offset=offset, limit=limit, sort_by_num=by_num or None,
     )
 
 
@@ -129,6 +135,8 @@ async def hot_scan(client, collections, limit, stats, delay):
     t0 = time.perf_counter()
     page_sizes = []
     for c in collections:
+        if stats.stopped:
+            break
         res = await call(client, resale_request(c["id"], "", limit), stats, delay)
         if res is not None:
             page_sizes.append(len(res.gifts))
@@ -142,12 +150,16 @@ async def full_scan(client, collections, limit, budget, stats, delay):
     t0 = time.perf_counter()
     start_requests = stats.requests
     for c in sorted(collections, key=lambda c: c["on_resale"]):
-        offset, got = "", 0
+        if stats.stopped:
+            break
+        offset, got, seen, status = "", 0, {""}, "complete"
         while True:
             if stats.requests - start_requests >= budget:
+                done.append({"title": c["title"], "expected": c["on_resale"], "fetched": got, "status": "budget"})
                 return time.perf_counter() - t0, listings, done
-            res = await call(client, resale_request(c["id"], offset, limit), stats, delay)
+            res = await call(client, resale_request(c["id"], offset, limit, by_num=True), stats, delay)
             if res is None:
+                status = "stopped" if stats.stopped else "error"
                 break
             for g in res.gifts:
                 stars, ton = price_of(g)
@@ -156,10 +168,19 @@ async def full_scan(client, collections, limit, budget, stats, delay):
                     "owner": owner_of(g),
                 }
             got += len(res.gifts)
-            offset = getattr(res, "next_offset", None)
-            if not offset or not res.gifts:
+            nxt = getattr(res, "next_offset", None)
+            if not nxt:
                 break
-        done.append({"title": c["title"], "expected": c["on_resale"], "fetched": got})
+            if not res.gifts:
+                status = "empty_page_with_cursor"
+                break
+            if nxt in seen:
+                status = "repeated_cursor"
+                break
+            seen.add(nxt)
+            offset = nxt
+        done.append({"title": c["title"], "expected": c["on_resale"], "fetched": got, "status": status,
+                     "server_count": getattr(res, "count", None) if res is not None else None})
     return time.perf_counter() - t0, listings, done
 
 
@@ -168,8 +189,11 @@ async def full_scan(client, collections, limit, budget, stats, delay):
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=100, help="размер страницы (сервер может отдать меньше)")
-    ap.add_argument("--delay", type=float, default=0.1, help="пауза между запросами, сек")
+    ap.add_argument("--delay", type=float, default=1.5,
+                    help="пауза между запросами, сек (замер 04.10: 0.1 → флуд на 41-м запросе, 1.5 → без флуда)")
     ap.add_argument("--full-budget", type=int, default=300, help="макс. запросов на полный обход")
+    ap.add_argument("--wait-on-flood", action="store_true",
+                    help="на FLOOD_WAIT ждать и продолжать (по умолчанию — остановиться и записать отчёт)")
     args = ap.parse_args()
 
     if not hasattr(functions.payments, "GetResaleStarGiftsRequest"):
@@ -179,12 +203,14 @@ async def main():
         os.getenv("TG_SESSION", "bench"),
         int(os.environ["TG_API_ID"]),
         os.environ["TG_API_HASH"],
+        flood_sleep_threshold=0,  # любой FLOOD_WAIT виден и попадает в отчёт, а не «досыпается» внутри Telethon
+        request_retries=1,        # без скрытых повторов
     )
     await client.start()
     me = await client.get_me()
     print(f"Аккаунт: {me.first_name} (id {me.id})\n")
 
-    stats = Stats()
+    stats = Stats(wait_on_flood=args.wait_on_flood)
     OUT_DIR.mkdir(exist_ok=True)
 
     print("1/3 Каталог коллекций…")
@@ -200,7 +226,7 @@ async def main():
     print(f"  Цикл: {hot_time:.1f} c, реальный размер страницы: до {max_page}")
 
     full_done, listings, full_time = [], {}, 0.0
-    if args.full_budget:
+    if args.full_budget and not stats.stopped:
         print(f"\n3/3 Полный обход (бюджет {args.full_budget} запросов)…")
         req_before = stats.requests
         full_time, listings, full_done = await full_scan(
@@ -234,6 +260,8 @@ async def main():
     print(f"Полный цикл, оценка времени: {estimate['full_cycle_sec_one_account']} c на 1 аккаунте")
     print(f"Средняя задержка запроса:    {s['latency_avg_ms']} мс (p95 {s['latency_p95_ms']} мс)")
     print(f"FLOOD_WAIT:                  {s['flood_waits'] or 'не было'}")
+    if stats.stopped:
+        print(f"Остановлен:                  {stats.stopped} (повторно с этого аккаунта — не раньше, чем через это время)")
     print(f"\nОтчёт: {OUT_DIR / 'report.json'}  — скинь его мне")
 
     await client.disconnect()

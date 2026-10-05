@@ -12,7 +12,9 @@ class EventType(str, Enum):
     LISTED = "listed"                # выставили на продажу
     PRICE_CHANGED = "price_changed"  # сменили цену
     DELISTED = "delisted"            # сняли с продажи (владелец тот же)
-    SOLD = "sold"                    # купили (сменился владелец, цена = последняя выставленная)
+    OWNER_CHANGED = "owner_changed"  # лот ушёл к другому владельцу: продажа ИЛИ передача — без подтверждения не знаем
+    SOLD = "sold"                    # продажа с подтверждением сделки (пока не выдаётся: нужен источник подтверждения)
+    GONE = "gone"                    # лот пропал, а гифт по slug не находится (сожгли / скрафтили / иное)
     TRANSFER = "transfer"            # передали вне маркета
     MINTED = "minted"                # новый NFT (апгрейд)
     BURNED = "burned"                # сожгли / скрафтили
@@ -24,22 +26,34 @@ def utcnow() -> datetime:
 
 @dataclass(frozen=True)
 class Listing:
-    """Лот на маркете в момент снимка."""
+    """Лот на маркете в момент снимка.
+
+    Цена продавца — «родная»: TON, если лот продаётся только за TON (`ton_only`), иначе звёзды.
+    Вторая котировка — пересчёт по курсу; её изменение не считается сменой цены продавцом.
+    """
     slug: str
     collection_id: int
     num: int | None = None
-    price_stars: int | None = None
+    price_stars: float | None = None  # звёзды (с дробной частью из StarsAmount.nanos, если есть)
     price_ton: float | None = None
     owner: str | None = None
     model: str | None = None     # атрибуты NFT: модель, фон, узор
     backdrop: str | None = None
     pattern: str | None = None
+    ton_only: bool | None = None
 
     def attrs(self) -> dict:
         return {"model": self.model, "backdrop": self.backdrop, "pattern": self.pattern}
 
+    def native_price(self) -> tuple[str, float | None]:
+        if self.ton_only:
+            return "TON", self.price_ton
+        if self.price_stars is not None:
+            return "XTR", self.price_stars
+        return "TON", self.price_ton  # звёздной котировки нет вовсе
+
     def same_price(self, other: "Listing") -> bool:
-        return (self.price_stars, self.price_ton) == (other.price_stars, other.price_ton)
+        return self.native_price() == other.native_price()
 
 
 @dataclass(frozen=True)
@@ -49,9 +63,9 @@ class Event:
     slug: str
     collection_id: int | None = None
     num: int | None = None
-    price_stars: int | None = None
+    price_stars: float | None = None
     price_ton: float | None = None
-    prev_price_stars: int | None = None
+    prev_price_stars: float | None = None
     prev_price_ton: float | None = None
     from_owner: str | None = None  # продавец / тот, от кого ушёл гифт
     to_owner: str | None = None    # покупатель / получатель
@@ -59,6 +73,7 @@ class Event:
     model: str | None = None
     backdrop: str | None = None
     pattern: str | None = None
+    ton_only: bool | None = None
 
     @property
     def id(self) -> uuid.UUID:

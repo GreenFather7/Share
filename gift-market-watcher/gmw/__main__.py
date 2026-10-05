@@ -52,12 +52,15 @@ async def cmd_collect(s: config.Settings, source: str) -> None:
         from .collectors.telegram import TelegramMarket
         if not (s.tg_api_id and s.tg_api_hash):
             raise SystemExit("Нужны TG_API_ID и TG_API_HASH в .env")
-        api = await TelegramMarket.connect(s.tg_sessions, s.tg_api_id, s.tg_api_hash, s.request_interval)
+        api = await TelegramMarket.connect(s.tg_sessions, s.tg_api_id, s.tg_api_hash, s.request_interval,
+                                           s.flood_state)
     snapshot = await st.load_listings(api.source)
     await st.close()
     collector = MarketCollector(api, bus, snapshot, hot_min=s.hot_min, hot_max=s.hot_max,
                                 full_interval=s.full_interval)
-    await collector.run()
+    # По умолчанию — столько параллельных задач, сколько аккаунтов (у фейка — 4).
+    workers = s.workers or (api.pool.size if hasattr(api, "pool") else 4)
+    await collector.run(workers=workers, max_full=s.max_full)
 
 
 async def cmd_login(s: config.Settings) -> None:

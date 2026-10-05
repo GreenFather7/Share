@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import asyncpg
@@ -11,7 +12,7 @@ from .models import Collection, Event, EventType, Listing
 SCHEMA = Path(__file__).with_name("schema.sql")
 
 _EVENT_COLS = ("id", "ts", "type", "source", "slug", "collection_id", "num", "price_stars", "price_ton",
-               "prev_price_stars", "prev_price_ton", "from_owner", "to_owner", "model", "backdrop", "pattern")
+               "prev_price_stars", "prev_price_ton", "from_owner", "to_owner", "model", "backdrop", "pattern", "ton_only")
 
 
 class Storage:
@@ -38,14 +39,14 @@ class Storage:
             return []
         rows = [(e.id, e.ts, e.type.value, e.source, e.slug, e.collection_id, e.num, e.price_stars,
                  e.price_ton, e.prev_price_stars, e.prev_price_ton, e.from_owner, e.to_owner,
-                 e.model, e.backdrop, e.pattern) for e in events]
+                 e.model, e.backdrop, e.pattern, e.ton_only) for e in events]
         async with self.pool.acquire() as con, con.transaction():
             inserted = await con.fetch(f"""
                 INSERT INTO events ({", ".join(_EVENT_COLS)})
                 SELECT * FROM unnest($1::uuid[], $2::timestamptz[], $3::text[], $4::text[], $5::text[],
-                                     $6::bigint[], $7::int[], $8::bigint[], $9::numeric[], $10::bigint[],
+                                     $6::bigint[], $7::int[], $8::numeric[], $9::numeric[], $10::numeric[],
                                      $11::numeric[], $12::text[], $13::text[], $14::text[], $15::text[],
-                                     $16::text[])
+                                     $16::text[], $17::boolean[])
                 ON CONFLICT (id) DO NOTHING
                 RETURNING id""", *zip(*rows))
             new_ids = {r["id"] for r in inserted}
@@ -58,19 +59,20 @@ class Storage:
         if e.type in (EventType.LISTED, EventType.PRICE_CHANGED):
             await con.execute("""
                 INSERT INTO listings (source, slug, collection_id, num, price_stars, price_ton, owner, active,
-                                      updated_at, model, backdrop, pattern)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)
+                                      updated_at, model, backdrop, pattern, ton_only)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11, $12)
                 ON CONFLICT (source, slug) DO UPDATE SET price_stars = EXCLUDED.price_stars,
                     price_ton = EXCLUDED.price_ton, owner = COALESCE(EXCLUDED.owner, listings.owner),
-                    active = true, updated_at = EXCLUDED.updated_at,
+                    active = true, updated_at = EXCLUDED.updated_at, ton_only = EXCLUDED.ton_only,
                     model = COALESCE(EXCLUDED.model, listings.model),
                     backdrop = COALESCE(EXCLUDED.backdrop, listings.backdrop),
                     pattern = COALESCE(EXCLUDED.pattern, listings.pattern)
                 WHERE listings.updated_at <= EXCLUDED.updated_at""",
                 e.source, e.slug, e.collection_id, e.num, e.price_stars, e.price_ton, e.from_owner, e.ts,
-                e.model, e.backdrop, e.pattern)
+                e.model, e.backdrop, e.pattern, e.ton_only)
             owner = e.from_owner
-        elif e.type in (EventType.SOLD, EventType.DELISTED, EventType.BURNED):
+        elif e.type in (EventType.SOLD, EventType.OWNER_CHANGED, EventType.DELISTED, EventType.BURNED,
+                        EventType.GONE):
             # Не удаляем, а гасим с меткой времени: иначе запоздалый посев «воскресит» проданный лот.
             await con.execute("""
                 INSERT INTO listings (source, slug, collection_id, num, price_stars, price_ton, owner, active, updated_at)
@@ -78,7 +80,8 @@ class Storage:
                 ON CONFLICT (source, slug) DO UPDATE SET active = false, updated_at = EXCLUDED.updated_at
                 WHERE listings.updated_at <= EXCLUDED.updated_at""",
                 e.source, e.slug, e.collection_id or 0, e.num, e.price_stars, e.price_ton, e.from_owner, e.ts)
-            owner = e.to_owner if e.type == EventType.SOLD else e.from_owner
+            owner = {EventType.SOLD: e.to_owner, EventType.OWNER_CHANGED: e.to_owner,
+                     EventType.DELISTED: e.from_owner}.get(e.type)
         else:  # transfer / minted
             owner = e.to_owner
         if owner:
@@ -102,15 +105,16 @@ class Storage:
                 source, collection_id, [l.slug for l in listings], ts)
             await con.executemany("""
                 INSERT INTO listings (source, slug, collection_id, num, price_stars, price_ton, owner, active,
-                                      updated_at, model, backdrop, pattern)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11)
+                                      updated_at, model, backdrop, pattern, ton_only)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11, $12)
                 ON CONFLICT (source, slug) DO UPDATE SET price_stars = EXCLUDED.price_stars,
                     price_ton = EXCLUDED.price_ton, owner = EXCLUDED.owner, active = true,
+                    ton_only = EXCLUDED.ton_only,
                     updated_at = EXCLUDED.updated_at, model = EXCLUDED.model,
                     backdrop = EXCLUDED.backdrop, pattern = EXCLUDED.pattern
                 WHERE listings.updated_at <= EXCLUDED.updated_at""",
                 [(source, l.slug, collection_id, l.num, l.price_stars, l.price_ton, l.owner, ts,
-                  l.model, l.backdrop, l.pattern) for l in listings])
+                  l.model, l.backdrop, l.pattern, l.ton_only) for l in listings])
             await con.executemany("""
                 INSERT INTO gifts (slug, collection_id, num, owner, updated_at) VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (slug) DO UPDATE SET owner = EXCLUDED.owner, updated_at = EXCLUDED.updated_at
@@ -132,9 +136,8 @@ class Storage:
         out: dict[int, dict[str, Listing]] = {}
         for r in rows:
             out.setdefault(r["collection_id"], {})[r["slug"]] = Listing(
-                r["slug"], r["collection_id"], r["num"], r["price_stars"],
-                float(r["price_ton"]) if r["price_ton"] is not None else None, r["owner"],
-                r["model"], r["backdrop"], r["pattern"])
+                r["slug"], r["collection_id"], r["num"], _num(r["price_stars"]), _num(r["price_ton"]), r["owner"],
+                r["model"], r["backdrop"], r["pattern"], r["ton_only"])
         return out
 
     async def events(self, *, type: str | None = None, source: str | None = None,
@@ -195,6 +198,13 @@ class Storage:
                 "listings": r["listings"]}
 
 
+def _num(v):
+    """numeric из базы → int, если целое, иначе float (как пришло от источника)."""
+    if v is None:
+        return None
+    return int(v) if v == v.to_integral_value() else float(v)
+
+
 def _row(r) -> dict:
     d = dict(r)
     for k, v in d.items():
@@ -202,6 +212,6 @@ def _row(r) -> dict:
             d[k] = v.isoformat()
         elif isinstance(v, uuid.UUID):
             d[k] = str(v)
-        elif v is not None and k.endswith("_ton"):
-            d[k] = float(v)
+        elif isinstance(v, Decimal):
+            d[k] = _num(v)
     return d

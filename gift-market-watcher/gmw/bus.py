@@ -21,13 +21,15 @@ Message = tuple[str, dict]  # (id, {"kind": ..., "data": ...})
 
 class Bus(Protocol):
     async def publish(self, kind: str, data: dict) -> None: ...
+    async def publish_batch(self, messages: list[tuple[str, dict]]) -> None:
+        """Атомарно: либо все сообщения попали в шину, либо ни одно."""
     async def read(self, count: int = 500, block_ms: int = 1000) -> list[Message]: ...
     async def ack(self, ids: list[str]) -> None: ...
 
 
 async def publish_events(bus: Bus, events: list[Event]) -> None:
-    for e in events:
-        await bus.publish("event", e.to_dict())
+    if events:
+        await bus.publish_batch([("event", e.to_dict()) for e in events])
 
 
 async def publish_collection(bus: Bus, c: Collection) -> None:
@@ -49,8 +51,14 @@ class RedisBus:
                 raise
 
     async def publish(self, kind: str, data: dict) -> None:
-        payload = json.dumps({"kind": kind, "data": data}, ensure_ascii=False)
-        await self.r.xadd(STREAM, {"m": payload}, maxlen=self.maxlen, approximate=True)
+        await self.publish_batch([(kind, data)])
+
+    async def publish_batch(self, messages: list[tuple[str, dict]]) -> None:
+        async with self.r.pipeline(transaction=True) as pipe:  # MULTI/EXEC
+            for kind, data in messages:
+                payload = json.dumps({"kind": kind, "data": data}, ensure_ascii=False)
+                pipe.xadd(STREAM, {"m": payload}, maxlen=self.maxlen, approximate=True)
+            await pipe.execute()
 
     async def read(self, count: int = 500, block_ms: int = 1000) -> list[Message]:
         # После рестарта сначала дочитываем то, что взяли, но не подтвердили.
@@ -78,8 +86,13 @@ class MemoryBus:
         self.acked: list[str] = []
 
     async def publish(self, kind: str, data: dict) -> None:
-        self._n += 1
-        await self._q.put((str(self._n), json.loads(json.dumps({"kind": kind, "data": data}))))
+        await self.publish_batch([(kind, data)])
+
+    async def publish_batch(self, messages: list[tuple[str, dict]]) -> None:
+        encoded = [json.loads(json.dumps({"kind": k, "data": d})) for k, d in messages]  # сначала всё, потом кладём
+        for m in encoded:
+            self._n += 1
+            self._q.put_nowait((str(self._n), m))
 
     async def read(self, count: int = 500, block_ms: int = 1000) -> list[Message]:
         msgs = []

@@ -11,7 +11,8 @@
 2. `payments.getResaleStarGifts` по каждой коллекции, первая страница — «горячий» скан. Без `sort_by_*` сервер отдаёт лоты по времени последнего изменения цены, новые сверху.
 3. Ограниченный полный обход: пагинация по `next_offset`, не больше `--full-budget` запросов (по умолчанию 300).
 
-`FLOOD_WAIT` скрипт ловит, ждёт сколько скажет сервер и записывает в отчёт.
+На первом `FLOOD_WAIT` скрипт останавливается и всё равно пишет отчёт (флаг `--wait-on-flood` — ждать и продолжать). Telethon настроен так, что сам на флудах не спит и запросы не повторяет.
+Полный обход идёт с `sort_by_num` и отмечает для каждой коллекции статус: `complete`, `repeated_cursor`, `empty_page_with_cursor`, `budget`, `stopped`.
 
 ## Правила (важно, на сервере есть другой рабочий проект)
 
@@ -41,12 +42,12 @@ cd ~/gift-bench
 python3 -m venv .venv && source .venv/bin/activate
 pip install "telethon>=1.40" "python-dotenv>=1.0"
 cp .env.example .env      # вписать TG_API_ID, TG_API_HASH; TG_SESSION=bench (имя файла без .session)
-python bench.py           # первый прогон: паузы 0.1 с, бюджет полного обхода 300 запросов
+python bench.py           # пауза 1.5 с, бюджет полного обхода 300 запросов; на первом FLOOD_WAIT — стоп и отчёт
 ```
 
 Если первый прогон прошёл без FLOOD_WAIT, сделай второй, жёстче, чтобы найти лимит:
 ```bash
-python bench.py --delay 0 --full-budget 600
+python bench.py --delay 1.0 --full-budget 600
 ```
 Перед вторым прогоном сохрани отчёт первого: `cp bench_out/report.json bench_out/report_1.json`.
 
