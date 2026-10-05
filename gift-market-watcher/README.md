@@ -1,0 +1,108 @@
+# gift-market-watcher
+
+Сбор событий NFT-подарков Telegram (листинги, смены цен, продажи, снятия) в нашу базу и выдача из неё.
+Пользователи читают только из базы, в Telegram на их запросы мы не ходим.
+
+## Как устроено
+
+```
+ сборщики ──▶ Redis Streams ──▶ нормализатор ──▶ Postgres ──▶ API (REST + WebSocket /live)
+ (telegram,      (шина, ничего       (дедуп,          (events — лента,
+  fake, дальше    не теряется         проекции)        listings — что на продаже,
+  Portals/MRKT)   при падениях)                        gifts — владельцы)
+```
+
+- **Сборщик маркета** (`gmw/collectors/market.py`) работает поверх любого источника:
+  - *горячий скан* — первая страница коллекции, где сервер отдаёт свежие изменения цены сверху. Интервал адаптивный: есть изменения — смотрим чаще, тишина — реже;
+  - *полный скан* — все страницы по номеру (`sort_by_num`), с проверками: повтор курсора, пустая страница с курсором, лимит страниц, сверка с количеством. Незавершённый обход пропавших не трогает. Завершённый проверяет их точечно: сменился владелец → `owner_changed` (продажа или передача — без подтверждения не различаем), нет → `delisted`, гифт не найден → `gone`;
+  - *первый полный скан* — посев текущего состояния без событий, чтобы не завалить ленту ложными `listed`.
+- **Пул аккаунтов** (`gmw/accounts.py`): на аккаунте не больше одного запроса одновременно, пауза от конца запроса (`GMW_REQUEST_INTERVAL`, по умолчанию 2 с), `FLOOD_WAIT` → аккаунт отдыхает, срок сохраняется в `flood_state.json` и переживает рестарт.
+- **Параллельность**: сборщик запускает столько задач, сколько аккаунтов (`GMW_WORKERS`), полных сканов одновременно — не больше `GMW_MAX_FULL`; по одной коллекции — одна задача за раз.
+- **Сначала шина, потом снимок.** События одного скана уходят в Redis одной транзакцией; снимок обновляется только после этого — сбой шины не теряет изменения.
+- **События идемпотентны.** У события детерминированный id, а проекции учитывают время, так что повторная доставка и рестарты не дают дублей и ложных событий.
+- **Фейковый маркет** (`gmw/collectors/fake.py`) живёт сам по себе. С ним весь конвейер гоняется без Telegram.
+
+## Шаг 0 — замер (`bench.py`)
+
+Перед боевым запуском узнаём реальные цифры: сколько лотов, сколько запросов на цикл, где флуд-лимит.
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # впиши TG_API_ID и TG_API_HASH
+python bench.py             # первый запуск спросит номер и код — это вход в аккаунт
+```
+
+Флаги: `--delay 1.5` (пауза, по умолчанию), `--full-budget 0` (без полного обхода), `--limit 100`, `--wait-on-flood` (не останавливаться на флуде).
+Результат: `bench_out/report.json` с цифрами и `bench_out/snapshot.json` с собранными лотами.
+
+## Запуск в Docker
+
+```bash
+cp .env.example .env
+docker compose --profile fake up -d          # всё на фейковом маркете
+curl localhost:8000/stats
+```
+
+С настоящим Telegram:
+```bash
+docker compose run --rm login                # один раз: номер, код, 2FA → sessions/*.session
+docker compose --profile telegram up -d
+```
+
+## Установка на сервер с другими проектами
+
+1. Разведка. Скрипт только смотрит и ничего не меняет:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/GreenFather7/Share/claude/parser-from-chat-k5im4d/gift-market-watcher/deploy/preflight.sh | bash
+   ```
+2. Установка: всё ложится в `/opt/gift-market-watcher`, поднимается Docker-проект `gmw`:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/GreenFather7/Share/claude/parser-from-chat-k5im4d/gift-market-watcher/deploy/install.sh | bash
+   ```
+
+Как проект уживается с соседями: своё имя Docker-проекта, своя сеть и тома. Postgres и Redis наружу не открыты.
+API слушает только `127.0.0.1:8040` и требует токен (`GMW_API_TOKEN` в `.env`).
+У каждого контейнера лимиты памяти и CPU (всего около 1.3 ГБ), у логов ротация.
+Пакеты, nginx, firewall и systemd скрипты не трогают.
+Удалить всё целиком: `cd /opt/gift-market-watcher/src/gift-market-watcher && docker compose --profile '*' down -v && rm -rf /opt/gift-market-watcher`.
+
+## Запуск без Docker
+
+Нужны Postgres и Redis (адреса — в `.env`).
+```bash
+python -m gmw initdb
+python -m gmw worker &
+python -m gmw collect fake &      # или: python -m gmw login && python -m gmw collect telegram
+python -m gmw api                 # http://localhost:8000/docs
+```
+
+## API
+
+| Запрос | Что отдаёт |
+|---|---|
+| `GET /events?type=owner_changed&collection_id=…&source=…&slug=…&before=…&limit=50` | лента событий, новые сверху |
+| `GET /floors/{collection_id}?by=model,backdrop` | флор и самый дешёвый лот по каждой комбинации атрибутов |
+| `GET /gifts/{slug}` | владелец, текущие лоты, история гифта |
+| `GET /floors` | флор и число лотов по коллекциям |
+| `GET /stats` | всего событий, событий в секунду, лотов на продаже |
+| `WS /live?type=…&collection_id=…` | события в реальном времени |
+
+Типы событий: `listed`, `price_changed` (только смена цены продавцом — пересчёт TON по курсу не считается), `delisted`, `owner_changed`, `gone`; зарезервированы `sold` (продажа с подтверждением сделки), `transfer`, `minted`, `burned`.
+
+## Тесты
+
+```bash
+pip install -r requirements-dev.txt
+pytest                                         # юнит-тесты
+GMW_TEST_DATABASE_URL=postgresql://… GMW_TEST_REDIS_URL=redis://… pytest   # + весь конвейер на живых Postgres/Redis
+```
+
+## Дальше
+
+1. Прогнать `bench.py` и по цифрам выставить число аккаунтов и интервалы.
+2. Сборщики Portals / MRKT / Tonnel / Getgems — тот же `MarketAPI`, только другой источник.
+3. Полный индекс: обход владельцев (`getSavedStarGifts`), передачи, выпуск, лидерборды.
+4. Атрибуты (модель / фон / узор) и флоры по комбинациям, бот-отслеживания, Mini App.
+
+⚠️ Используй отдельный аккаунт, не основной. Файлы `.env` и `*.session` никому не отправляй: это доступ к аккаунту.

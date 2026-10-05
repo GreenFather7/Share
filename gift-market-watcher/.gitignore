@@ -1,0 +1,13 @@
+.env
+*.session
+*.session-journal
+bench_out/
+__pycache__/
+.venv/
+sessions/
+.pytest_cache/
+dump.rdb
+flood_state.json
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

@@ -1,0 +1,6 @@
+telethon>=1.40
+python-dotenv>=1.0
+asyncpg>=0.29
+redis>=5.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
